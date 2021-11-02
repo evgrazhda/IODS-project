@@ -1,13 +1,30 @@
-
 # About the project
 
-*Write a short description about the course and add a link to your GitHub repository here. This is an R Markdown (.Rmd) file so you should use R Markdown syntax.*
+*Ruminations about the Introduction to Open Data Science (IODS) 2021*
 
-```{r}
-# This is a so-called "R chunk" where you can write R code.
+## Feelings
 
-date()
+The course `Introduction to Open Data Science (IODS)` feels like a good introduction 
+to the __R-Rstudio-git__ pipeline advocating for reproducible well-documented research.
 
-```
-The text continues here.
+Challenges may arise due to
 
+  * various backgrounds of the students
+  * technological hurdles
+
+## Outcomes
+
+I hope the course will generate mindsets favoring *open research* equipped
+with _technical skills_ to produce good research output.
+
+I hope to learn not only technical skills but also ways to endorse 
+open data science. 
+
+## Where to find the course
+
+I found the course in Sisu. Apparently it is also found in 
+the [MOOC](https://mooc.helsinki.fi) platform.
+
+## Repo
+
+A fork of the course can be found at my [repo](https://github.com/evgrazhda/IODS-project).
