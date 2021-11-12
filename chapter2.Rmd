@@ -1,13 +1,222 @@
-# Insert chapter 2 title here
-
-*Describe the work you have done this week and summarize your learning.*
-
-- Describe your work and results clearly. 
-- Assume the reader has an introductory course level understanding of writing and reading R code as well as statistical methods.
-- Assume the reader has no previous knowledge of your data or the more advanced methods you are using.
+# Week 2 - Simple linear regression
 
 ```{r}
 date()
 ```
 
-Here we go again...
+## Introduction
+
+This week, we are analyzing and modeling a survey data concerning the approaches to learning. Description of the data can be found [here](https://www.mv.helsinki.fi/home/kvehkala/JYTmooc/JYTOPKYS3-meta.txt) and [here](https://www.mv.helsinki.fi/home/kvehkala/JYTmooc/JYTOPKYS2-meta.txt).
+
+The data has been preprocessed to include variables on gender, age, attitude, exam points, and scores on deep, surface and strategic questions.
+
+## Dataset
+
+Begin by loading the analysis data. Let's use the "official" csv-file; an R script to produce the wrangled data is in the [repo](https://github.com/evgrazhda/IODS-project).
+
+```{r}
+# read in the data
+learning2014 <- read.csv("http://s3.amazonaws.com/assets.datacamp.com/production/course_2218/datasets/learning2014.txt", header = TRUE, sep = ",")
+
+dim(learning2014)
+```
+
+There are 166 rows and 7 columns. 
+
+```{r}
+str(learning2014)
+```
+
+The variables are mostly numeric. Gender is of character value, change it to factor.
+
+```{r}
+# change to factor
+learning2014$gender <- as.factor(learning2014$gender)
+
+summary(learning2014)
+```
+
+Seems like most of the students are female, age spans 17-55, exam points are between 7-33 and the question variables are capped at 5 (from documentation, on a scale 1-5).
+
+## Graphical overview
+
+Using GGlally::ggpairs, we can plot the distribution of the variables, correlation (with significance), boxplots and scatterplots stratified by the gender.
+
+```{r}
+library(GGally)
+library(ggplot2)
+
+p <- ggpairs(learning2014, mapping = aes(col = gender, alpha = 0.3), 
+             lower = list(combo = wrap("facethist", bins = 20)),  
+             upper = list(continuous = wrap("cor", size = 3)))
+
+p
+```
+
+We see that
+
+  * Most students are female
+  * Age is right skewed (more of smaller age)
+  * There is a positive correlation between `points` and `attitude`
+  * There is, as expected, a negative correlation between `surf` and `deep` questions
+  * There is a negative correlation between `surf` and `attitude`
+  * There is a negative correlation between `surf` and `stra` questions
+  * Distribution of the exam points is not perfectly normal (can be tested with e.g. stats::shapiro.test)
+  
+## Linear regression
+
+For pedagogical reasons, let's fit a simple multivariable linear regression first with four (instead of three; choosing three would not change the results) explanatory variables, ie. regress exam points on other variables. Choose variables based on their absolute correlation with the exam points.
+
+```{r}
+sort(abs(cor(learning2014[, -1])[, c("points")]))
+```
+
+
+```{r}
+model <- lm(points ~ attitude + stra + surf + age, data = learning2014)
+
+summary(model)
+```
+
+From the summary, the intercept is very significantly non-zero based on a t-test (H_0: intercept is zero, H_1: intercept is not zero) although the result is not very meaningful as e.g. age cannot be zero in this context. 
+
+The `attitude` variable has a very significant effect on the exam points (p-value about zero for a t-test for H_0: attitude has no effect on the slope when the other variables are kept constant, H_1: attitude has an effect). Variables `stra` and `age` are weakly significant or non-significant depending on the nomenclature (same test). Variable `surf` is not significant, let's remove it and refit.
+
+```{r}
+model <- lm(points ~ attitude + stra + age, data = learning2014)
+
+summary(model)
+```
+
+Now all explanatory variables are significant with a 0.10 significance cutoff.
+
+The F-test is significant, some of the variables are therefore associated with the response variable (have non-zero coefficient).
+
+## Interpretation of the linear model
+
+From the summary above, we see that as `attitude` increases by one, exam points increase by about 3.48 when other variables are kept constant. For `stra`, the value is about 1.00. Age seems to have a smaller effect, with an additional year decreasing exam points by around 0.08 if other variable do not change.
+
+Multiple R-squared is 0.2182, meaning that the three explanatory variables account for approximately 22% variation in the exam points. This seems quite low and we should be careful when e.g. predicting exam points for new students with this model. The adjusted R-squared considers the number of explanatory variables and has here a similar, a bit smaller, value to the unadjusted R-squared.
+
+## Diagnostics
+
+Linear models carry assumptions that need to be verified. We use diagnostic plots for visual assessment.
+
+### Residuals versus fitted
+
+
+```{r}
+# residuals vs fitted values
+plot(model, which = 1)
+```
+
+There doesn't seem to be a clear pattern (maybe visually somewhat of a funnel with decreasing variance but Breusch-Pagan test `car::ncvTest(model)` doesn't detect heteroskedasticity) in the residuals versus fitted values in the sense that the variance in residuals is similar across the fitted values. Also, the variation is approximately symmetrical around zero. _Constant variance assumption_ appears to be met. Linear model appears to be OK for the data.
+
+Three outliers (set by `id.n` in plot.lm) are detected (rows 35, 56 and 145), let's check them.
+
+```{r}
+print(learning2014[c(35, 56, 145), ])
+```
+
+```{r}
+annotate <- c(35, 56, 145, 4, 2)  # 4 and 2 for leverage below
+
+# make the plot tighter
+op <- par(mfrow=c(3, 1),
+          mar = c(4, 4, 1, 1),
+          mgp = c(2, 1, 0))
+
+parameters <- c("attitude", "stra", "age")
+
+for (param in parameters) {
+  print(param)
+  plot(learning2014[, param], learning2014$points, 
+       xlab = param, ylab = "points")
+  
+  text(learning2014[annotate, param], 
+       learning2014[annotate, "points"], 
+       annotate, pos = 4, col = "red")
+}
+
+par(op) # return original par
+```
+
+It appears that here are the students that got low exam points despite having a high attitude value.
+
+Plot boxplot for assessment of symmetry of the residual distribution.
+
+```{r}
+boxplot(resid(model))
+```
+
+Does not seem too bad, but is not perfectly symmetric. QQ-plot will aid in deciding normality.
+
+### QQ-plot
+
+
+```{r}
+# qq-plot
+plot(model, which = 2)
+```
+
+Standardized residuals follow the linear pattern quite reasonably with the same outlier exceptions as above. Hence, there is no strong reason to suspect deviation from normality in the distribution of the residuals.
+
+### Residuals versus leverage
+
+```{r}
+# residuals vs. leverage
+plot(model, which = 5)
+```
+
+Observations 2, 4 and 56 have been marked as outliers, they have relatively high influence of the regression line compared to other observations. We can rerun the model without these to see if the multiple R-squared is increased.
+
+Cook's distance is also low, supporting the notion that there are no outliers having a great effect on the linear fit.
+
+```{r}
+max(cooks.distance(model))
+```
+
+
+```{r}
+summary(lm(points ~ attitude + stra + age, data = learning2014[-c(2, 4, 56), ]))
+```
+
+Multiple R-square is indeed a bit better. However, removal of the outliers would have to be justified from the data (e.g. are these students somehow different).
+
+### VIF
+
+```{r}
+library(car)
+vif(model)
+```
+
+Variance inflation factors are less than 10 (textbook), so there is no concern for collinearity.
+
+### AIC
+
+We can try automatic stepwise model selection by AIC criterion.
+
+```{r}
+library(MASS)
+model.full <- lm(points ~ gender + age + attitude + deep + stra + surf, 
+                 data = learning2014)
+stepAIC(model.full, direction = "both")
+```
+
+The produced model is the same we derived earlier.
+
+### Brute force
+
+Finally, we can try to brute force all linear models of simple combination of
+explanatory variables.
+
+```{r}
+library(olsrr)
+res <- olsrr::ols_step_all_possible(model.full)
+
+res[order(res$adjr, decreasing = TRUE), ]
+```
+
+By adjusted R-Square, it appears that the three variable model we used before fares very well compared to the full model. Attitude alone is also quite good in comparison and could be chosen by parsimony.
+ 
+ 
