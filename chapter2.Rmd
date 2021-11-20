@@ -94,7 +94,7 @@ The F-test is significant, some of the variables are therefore associated with t
 
 ## Interpretation of the linear model
 
-From the summary above, we see that as `attitude` increases by one, exam points increase by about 3.48 when other variables are kept constant. For `stra`, the value is about 1.00. Age seems to have a smaller effect, with an additional year decreasing exam points by around 0.08 if other variable do not change.
+From the summary above, we see that as `attitude` increases by one, exam points increase by about 3.48 when other variables are kept constant. For `stra`, the value is about 1.00. Age seems to have a smaller effect, with an additional year decreasing exam points by around 0.09 if other variables do not change.
 
 Multiple R-squared is 0.2182, meaning that the three explanatory variables account for approximately 22% variation in the exam points. This seems quite low and we should be careful when e.g. predicting exam points for new students with this model. The adjusted R-squared considers the number of explanatory variables and has here a similar, a bit smaller, value to the unadjusted R-squared.
 

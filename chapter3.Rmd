@@ -1,0 +1,541 @@
+# Week 3 - Logistic regression
+
+```{r}
+date()
+```
+
+
+```{r setup, include = FALSE, cache = FALSE}
+library(knitr)
+opts_chunk$set(fig.show = "hold")
+knitr::opts_chunk$set(message = FALSE, warning = FALSE, message = FALSE)
+```
+
+## Introduction
+
+This week, we are analyzing and modeling data on two questionnaires related to student performance and alcohol consumption. Further description is available [here](https://archive.ics.uci.edu/ml/datasets/Student+Performance). Since the description is relevant for analysis we reprint it verbatim:
+
+"_This data approach student achievement in secondary education of two Portuguese schools. The data attributes include student grades, demographic, social and school related features) and it was collected by using school reports and questionnaires. Two datasets are provided regarding the performance in two distinct subjects: Mathematics (mat) and Portuguese language (por). In [Cortez and Silva, 2008], the two datasets were modeled under binary/five-level classification and regression tasks. Important note: the target attribute G3 has a strong correlation with attributes G2 and G1. This occurs because G3 is the final year grade (issued at the 3rd period), while G1 and G2 correspond to the 1st and 2nd period grades. It is more difficult to predict G3 without G2 and G1, but such prediction is much more useful (see paper source for more details)._"
+
+The dataset has been preprocessed by joining data from two courses, Math and Portugese language. Variables `alc_use` and  `high_use` have been added in the wrangling phase.
+
+## Dataset
+
+Begin by loading the analysis data. Let's use the "official" csv-file; an R script to produce the wrangled data is in the [repo](https://github.com/evgrazhda/IODS-project).
+
+```{r}
+rm(list=ls())
+
+# read in the data, convert strings to factors
+alc <- read.csv("https://github.com/rsund/IODS-project/raw/master/data/alc.csv",
+                header = TRUE, sep = ",", stringsAsFactors = TRUE)
+
+dim(alc)
+```
+
+There are 370 rows and 51 columns. 
+
+```{r}
+str(alc)
+```
+
+Seems like there are mostly integer and character (factorized) valued variables, as well as at least one logical (`high_use`) and float (`alc_use`).
+
+```{r}
+# (Type for factor is int.)
+table(sapply(alc, typeof))
+
+# Check for zero variance (negate characters to get "not all duplicated")
+sort(
+  sapply(alc, function(x) { 
+    ifelse(is.numeric(x), var(x), !all(duplicated(x)[-1L])) 
+    }))
+# Seems OK, only `n` has zero variance.
+```
+
+
+## Variables correlated to alcohol consumption
+
+Let's apply a data-driven approach to discover the top 4 variables linked to the alcohol consumption. Intuitively, family relationships and characteristics, study time, grades, and peer behavior should have an effect.
+
+We want to compute association between all the variables. To allow for factors, we employ a stackoverflow solution
+
+```{r}
+# From 
+# https://stackoverflow.com/questions/52554336/plot-the-equivalent-of-correlation-matrix-for-factors-categorical-data-and-mi/56485520#56485520
+
+library(tidyverse)
+library(rcompanion)
+
+
+# Calculate a pairwise association between all variables in a data-frame. In particular nominal vs nominal with Chi-square, numeric vs numeric with Pearson correlation, and nominal vs numeric with ANOVA.
+# Adopted from https://stackoverflow.com/a/52557631/590437
+mixed_assoc = function(df, cor_method="spearman", adjust_cramersv_bias=TRUE){
+    df_comb = expand.grid(names(df), names(df),  stringsAsFactors = F) %>% set_names("X1", "X2")
+
+    is_nominal = function(x) class(x) %in% c("factor", "character")
+    # https://community.rstudio.com/t/why-is-purr-is-numeric-deprecated/3559
+    # https://github.com/r-lib/rlang/issues/781
+    is_numeric <- function(x) { is.integer(x) || is_double(x)}
+
+    f = function(xName,yName) {
+        x =  pull(df, xName)
+        y =  pull(df, yName)
+
+        result = if(is_nominal(x) && is_nominal(y)){
+            # use bias corrected cramersV as described in https://rdrr.io/cran/rcompanion/man/cramerV.html
+            cv = cramerV(as.character(x), as.character(y), bias.correct = adjust_cramersv_bias)
+            data.frame(xName, yName, assoc=cv, type="cramersV")
+
+        }else if(is_numeric(x) && is_numeric(y)){
+            correlation = cor(x, y, method=cor_method, use="complete.obs")
+            data.frame(xName, yName, assoc=correlation, type="correlation")
+
+        }else if(is_numeric(x) && is_nominal(y)){
+            # from https://stats.stackexchange.com/questions/119835/correlation-between-a-nominal-iv-and-a-continuous-dv-variable/124618#124618
+            r_squared = summary(lm(x ~ y))$r.squared
+            data.frame(xName, yName, assoc=sqrt(r_squared), type="anova")
+
+        }else if(is_nominal(x) && is_numeric(y)){
+            r_squared = summary(lm(y ~x))$r.squared
+            data.frame(xName, yName, assoc=sqrt(r_squared), type="anova")
+
+        }else {
+            warning(paste("unmatched column type combination: ", class(x), class(y)))
+        }
+
+        # finally add complete obs number and ratio to table
+        result %>% mutate(complete_obs_pairs=sum(!is.na(x) & !is.na(y)), complete_obs_ratio=complete_obs_pairs/length(x)) %>% rename(x=xName, y=yName)
+    }
+
+    # apply function to each variable combination
+    map2_df(df_comb$X1, df_comb$X2, f)
+}
+```
+
+Then we can use the function for correlations
+
+```{r}
+# remove boolean high_use (or recode it to integer/factor)
+mixed.cors <- mixed_assoc(alc[, -which(names(alc) %in% c("high_use"))])
+```
+
+```{r}
+library(corrplot)
+
+cor.matrix <- 
+  mixed.cors %>% 
+  select(x, y, assoc) %>% 
+  spread(y, assoc) %>% 
+  select(-x) %>%
+  replace(is.na(.), 0)
+
+rownames(cor.matrix) <- colnames(cor.matrix)
+
+corrplot(as.matrix(cor.matrix), method = "color",
+         tl.cex = 0.5, tl.col = "black")
+```
+
+From the correlation plot, we see that, as expected by definition, `Dalc` and `Walc` correlate positively with `alc_use`. It would be interesting to include these for further analysis to explain the drinking behavior. Since we're limited to four variables, we choose a coarse approach and only take  `alc_use`.
+
+The grade variables correlate negatively with `alc_use`; based on the data annotation in the beginning, it is easiest to choose `G3` for further analysis. The `famrel` correlates negatively with `alc_use`, and seems quite interesting. `goout`, `sex` and `studytime` are interesting as well. Let's make sure these variables don't correlate too much.
+
+```{r}
+interesting_vars <- c("alc_use", "G3", "famrel", "goout", "sex", "studytime")
+
+cor.matrix <- 
+  alc %>%
+    select(interesting_vars) %>%
+    mixed_assoc(cor_method = "pearson") %>%
+    select(x, y, assoc) %>% 
+    spread(y, assoc) %>%
+    select(-x)
+
+rownames(cor.matrix) <- colnames(cor.matrix)
+
+corrplot(as.matrix(cor.matrix), method = "color",
+         tl.cex = 1, tl.col = "black", addCoef.col = 'black')
+
+```
+
+Seems good!
+
+```{r}
+# Select the subset
+alc.sub <- alc[, interesting_vars]
+
+str(alc.sub)
+```
+
+
+## Further exploration
+
+Begin with the GGally::ggpairs
+
+```{r}
+library(GGally)
+library(ggplot2)
+
+p <- ggpairs(alc.sub, mapping = aes(col = sex, alpha = 0.3), 
+             lower = list(combo = wrap("facethist", bins = 20)),  
+             upper = list(continuous = wrap("cor", size = 3)))
+
+p
+
+```
+
+We see that
+
+  * There is approximately equal number of males (n=175) and females (n=195)
+  * Males tend to use more alcohol
+  * Distribution of grade `G3` is similar for both sexes, and is not normal (by shapiro.test()), has a peak and is left skewed
+  * `famrel` correlates with `alc_use`, but significantly only for males
+  * Males report better quality family relationships
+  * Males use less time for studying
+  * `goout` correlates positively with alcohol use with a high significance
+  * `studytime` correlates negatively with alcohol use with a high significance
+  
+All in all, there are several hypotheses
+
+  * Getting a better grade while being male is associated with lower alcohol use
+  * Family relationships affect alcohol use
+  * Alcohol is used when going out
+  * Alcohol is not used when studying
+  
+Let's take a closer look on the quality of family relationship versus alcohol use
+
+```{r}
+library(tidyverse)
+
+alc_var <- function(alc, expl.variable) {
+  expl.vars <- c(expl.variable, "alc_use", "sex")
+  
+  # Tidyverse black magic
+  res <- 
+    alc %>%
+      select(one_of(expl.vars)) %>%
+      count(!!!sapply(expl.vars, as.symbol))
+  
+  g <- ggplot(res, aes(x = .data[[expl.variable]], y = alc_use, col = sex)) + 
+    geom_point(aes(size = n), alpha = 0.5) + geom_smooth(method = "loess")
+  
+  return(g)
+}
+
+alc_var(alc, "famrel")
+```
+
+With a bit of caution, it appears than men with low quality `famrel` use more alcohol, as there is an increase in `alc_use` when `famrel` goes from medium to bad. However, the relationship is roughly linear (without deep analysis):
+
+```{r}
+summary(lm(alc_use ~ famrel, data = alc[alc$sex == "M", ]))
+```
+
+```{r}
+# make the plot tighter
+op <- par(mfrow=c(2, 2),
+          mar = c(4, 4, 2, 1),
+          mgp = c(2, 1, 0))
+
+plot(lm(alc_use ~ famrel, data = alc[alc$sex == "M", ]))
+
+par(op) # return original par
+```
+
+
+```{r}
+library(car)
+# There is no heteroscedasticity by Breusch-Pagan test
+car::ncvTest(lm(alc_use ~ famrel, data = alc[alc$sex == "M", ]))
+```
+
+Next, plot the other variables as well
+
+```{r, fig.height=4, fig.width=8}
+library(ggpubr)
+
+g1 <- alc_var(alc, "goout")
+g2 <- alc_var(alc, "sex")
+g3 <- alc_var(alc, "studytime")
+g4 <- alc_var(alc, "G3")
+
+ggarrange(g1, g2, g3, g4,
+          ncol = 4, nrow = 1, common.legend = TRUE, 
+          legend = "bottom")
+```
+
+When `goout` increases, so does the alcohol use. Males appear to use more alcohol. As `studytime` increases, alcohol usage drops. `G3` does not have a clear linear pattern with alcohol use. Otherwise, the above hypotheses are OK.
+
+## Logistic regression
+
+Now we are ready to fit the logistic regression model with `G3`, `famrel`, `goout`, `sex` and `studytime`.
+
+```{r}
+model.1 <- glm(paste0("high_use", " ~ ", paste(interesting_vars[-1], collapse=" + ")),
+               family = "binomial", data = alc)
+
+summary(model.1)
+```
+
+We got a model with four significant variables. `G3` is not significant, remove it and refit.
+
+```{r}
+model.2 <- glm(high_use ~ famrel + goout + sex + studytime,
+               family = "binomial", data = alc)
+
+summary(model.2)
+```
+
+
+There is a lot of output
+
+* Fitted model is $log \frac{Pr(high\_use =1)}{ 1 - Pr(high\_use = 1)} = log \frac{Pr(high\_use =1)}{Pr(high\_use = 0)} = -1.2672 - 0.4193*famrel + 0.7873 * goout + 0.7959 * sexM - 0.4814 * studytime$
+* The coefficients represent a change in the log odds of the response when the explanatory variable increases by one, conditional on the other explanatory variables remaining constant
+* All of the variables (and the non-zero intercept with 0.10 p-value cutoff) are significant by Wald test
+* Deviance is similar in concept to the squared error in ordinary regression and quantifies difference between the observed and predicted proportions/probabilities
+* Residual deviance is the sum of squares for residuals
+* Null deviance is the deviance for null model (`high_use ~ 1`)
+* AIC is the Akaike information criterion and can be used for model selection
+* Number of Fisher Scoring iterations is related to how many iterations are need to fit the model
+
+```{r}
+# Residual deviance
+sum(residuals(model.2, type = "deviance")^2)
+```
+
+See if residuals are roughly linear, otherwise we can't use GLM.
+
+```{r}
+# Plot residuals and check that linearity is OK
+plot(model.2, which = 1)  # -> Looks OK.
+```
+
+We can also test with ANOVA if null model is significantly different from our model
+
+```{r}
+# see http://homepage.stat.uiowa.edu/~rdecook/stat3200/notes/LogReg_part2_4pp.pdf
+# and https://cran.r-project.org/web/packages/HSAUR/vignettes/Ch_logistic_regression_glm.pdf
+# and https://stats.stackexchange.com/questions/59879/
+
+# 1-pchisq(model.2$null.deviance-model.2$deviance, model.2$df.null-model.2$df.residual)
+null <- glm(high_use ~ 1, family = "binomial", data = alc)
+anova(null, model.2, test="Chisq")
+```
+
+We conclude that at least one of the explanatory variables has non-zero coefficient by this test.
+
+### Compute odds ratios and confidence intervals
+
+```{r}
+OR <- coef(model.2) %>% exp
+CI <- confint(model.2) %>% exp
+
+list(OR = OR, CI = CI)
+```
+
+The odds ratio for `famrel` is 0.66 and 95% CI is [0.50, 0.86]. Thus, increase by 1 unit in `famrel` is associated with a decrease in the odds of `high_use` by 14-50%.
+
+Variables `goout` (increases `high_use` odds) and  `studytime` (decreases `high_use` odds) are interpreted analogously and neither containts 1 in the 95% CI.
+
+The `sexM` is interpreted in relation to implicit `sexF`: being male increases the `high_use` odds by around 122% with 95% CI of [1.32, 3.76].
+
+It seems that the results correspond to the hypotheses. It feels like `famrel` would  require more work although the interaction term of `sex`*`famrel` is not significant when added to `model.2` (data not shown).
+
+## Predictive power
+
+```{r}
+observed <- alc$high_use
+predicted <- predict(model.2, type = "response") > 0.5
+
+# 2x2 tabulation, confusion matrix
+table(observed, predicted)
+
+```
+
+Most cases are classified correctly.
+
+Below are the predictions versus actual `high_use` values, plotted separately for each explanatory variable.
+
+```{r matches}
+# Get predictions, compare against true values
+predicted_abs <- predict(model.2, type = "response")
+
+df <- data.frame(cbind(observed, predicted, predicted_abs, 
+                       alc[, interesting_vars[3:6]]))
+
+df$matches <- df$observed == df$predicted
+
+# Plot by explanatory variables
+prob.expl <- function(df, ind.var, expl.var, col.var) {
+
+  g <- ggplot(df, aes(x = .data[[ind.var]], 
+                      y = .data[[expl.var]])) + 
+    geom_point(alpha = 0.5, aes(col = .data[[col.var]])) + 
+    geom_smooth(method = "loess", col = "black", size = 0.5) +
+    theme_bw()
+  g
+}
+  
+g1 <- prob.expl(df, "predicted_abs", "famrel", "matches")
+g2 <- prob.expl(df, "predicted_abs", "goout", "matches")
+g3 <- prob.expl(df, "predicted_abs", "sex", "matches")
+g4 <- prob.expl(df, "predicted_abs", "studytime", "matches")
+
+ggarrange(g1, g2, g3, g4, ncol = 2, nrow = 2, labels = c("A", "B", "C", "D"),
+          common.legend = TRUE, legend = "bottom")
+
+```
+
+From the plot above we see where the predictions of `high_use`are right (greenish points) and wrong (red points). For `famrel` (A), `sex` (C) and `studytime` (D), the predictions seem to be false mostly around probability 0.5. With `goout`, `high_use` appears to be poorly predicted when `goout` is low and predicted value is in the range of [0.5, 0.7]. 
+
+Quantify at which probability values mismatches tend to occur:
+
+```{r}
+# Predictions equal observation
+round(table(cut_interval(df[df$matches == TRUE, c("predicted_abs")], length=0.20)) /
+  length(df$matches), 2)
+
+# False predictions
+round(table(cut_interval(df[df$matches == FALSE, c("predicted_abs")], length=0.20)) /
+  length(df$matches), 2)
+```
+
+This confirms that most false predictions are made around the probability 0.5.
+
+The training error of the model is 0.24, i.e. lowish. If we just guessed using, say, `goout`, the error would be around 0.28, which is not very bad. Of course the guessing is not very random, since we already know that `goout` is an important predictor.
+
+```{r}
+# Training error, model.2
+sum(df$matches == FALSE) / length(df$matches)
+
+# Guess high_use by goout
+guesses <- rep(FALSE, times = nrow(df))
+guesses[df$goout > mean(df$goout)] <- TRUE
+
+table(df$observed, guesses)
+
+sum(guesses != df$observed) / nrow(df)
+```
+
+## Cross-validation
+
+Follow the code in DataCamp for this one
+
+```{r}
+# define a loss function (average prediction error)
+loss_func <- function(class, prob) {
+  n_wrong <- abs(class - prob) > 0.5
+  mean(n_wrong)
+}
+
+# compute the average number of wrong predictions in the (training) data
+loss_func(alc$high_use, df$predicted_abs)
+
+# K-fold cross-validation
+library(boot)
+cv <- cv.glm(data = alc, cost = loss_func, glmfit = model.2, K = 10)
+
+# average number of wrong predictions in the cross validation
+cv$delta[1]
+```
+
+The test set performance is a bit better than the DataCamp baseline, 0.25 versus 0.26.
+
+## Simple model selection
+
+```{r}
+# Select all explanatory variables available
+training.vars <- colnames(alc)[1:36] # Discard non-joined .m and .p variables
+
+# Discard alcohol consumption variables and technical variables
+training.vars <- training.vars[!(
+  training.vars %in% c("Dalc", "Walc", "n", "id.p", "id.m"))]
+```
+
+Now, with enough compute we could just try all the variables, but that would amount to 2^32 = 4294967296 models. We instead use stepwise selection by AIC starting with the full model and progressing backwards. We also assume R handles the factor variable to dummy (treatment) encoding. (Note the [problems](https://journalofbigdata.springeropen.com/articles/10.1186/s40537-018-0143-6) of stepwise regression. It would be advisable to use other methods e.g. through Caret.)
+
+```{r}
+library(MASS)
+
+# Run stepwise AIC selection on full model, keep the model and its AIC
+final.m <- stepAIC(
+  # Full model
+  glm(paste0("high_use", " ~ ", paste(training.vars[-1], collapse=" + ")),
+             family = binomial, data = alc),
+  direction = "backward", trace = FALSE, 
+  # What to keep from models
+  keep = function(model, aic) { list(model = model, aic = aic) } )
+```
+
+Then perform 10-fold CV for the models
+
+```{r}
+# Init
+CVs  <- rep(NULL, ncol(final.m$keep))  # Test error
+ERRs <- rep(NULL, ncol(final.m$keep))  # Train error
+AICs <- rep(NULL, ncol(final.m$keep))
+Nvar <- rep(NULL, ncol(final.m$keep))
+
+for (i in 1:ncol(final.m$keep)) {  # Each column is a model
+  
+  interim.m <- final.m$keep[, i][1]$model
+  CVs[i] <- cv.glm(data = alc, cost = loss_func, glmfit = interim.m, K = 10)$delta[1]
+  
+  ERRs[i] <- loss_func(alc$high_use, predict(interim.m, type = "response"))
+  
+  AICs[i] <- final.m$keep[, i][2]$aic
+  
+  Nvar[i] <- length(final.m$keep[, i][1]$model$coefficients) - 1
+}
+
+CV.res <- data.frame(test = CVs, train = ERRs, AIC = AICs, Nvar = Nvar)
+```
+
+```{r}
+# Somewhat unsatisfactory graph with points
+
+g1 <- ggplot(CV.res, aes(x = Nvar, y = test)) + geom_line() + 
+  geom_point(aes(x = Nvar, y = test, color = AIC), size = 5, alpha = 0.8) +
+  theme_bw() +  xlab("Number of variables") + ylab("Test set error") +
+  ggtitle("10-fold CV on backward stepwise variable selection with AIC") +
+  scale_color_gradient(low="blue", high="red")
+
+g1
+```
+
+```{r}
+# Better graph with both test and training error, and AIC separately
+
+errors <- gather(CV.res, type, error, c("test", "train"))
+
+g1 <- ggplot(errors, aes(x = Nvar, color = type)) + geom_line(aes(y = error)) + 
+  theme_bw() +  xlab("Number of variables") + ylab("Test set error")
+
+g2 <- ggplot(errors, aes(x = Nvar)) + geom_line(aes(y = AIC)) + 
+  theme_bw() +  xlab("Number of variables") + ylab("AIC")
+  
+g <- ggarrange(g1, g2, ncol = 2, nrow = 1, widths = c(2, 1.5),
+          common.legend = FALSE, legend = "left")
+
+annotate_figure(g, top = text_grob("10-fold CV on backward stepwise variable selection with AIC"))
+```
+
+The final model was 
+
+```{r}
+summary(final.m)
+```
+
+Removing all non-significant explanatory variables and iterating yields a model with 0.20 prediction error and 0.22 test set error in 10-fold CV:
+
+```{r}
+parsimonious.m <- glm(formula = high_use ~ sex + address + reason + guardian + 
+    activities + famrel + goout + absences, family = binomial, data = alc)
+
+summary(parsimonious.m)
+
+loss_func(alc$high_use, predict(parsimonious.m, type = "response"))
+
+cv.glm(data = alc, cost = loss_func, glmfit = parsimonious.m, K = 10)$delta[1]
+```
+
