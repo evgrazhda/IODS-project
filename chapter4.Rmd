@@ -1,0 +1,461 @@
+# Week 4 - Clustering and classification
+
+```{r}
+date()
+```
+
+
+```{r setup_4, include = FALSE, cache = FALSE}
+library(knitr)
+opts_chunk$set(fig.show = "hold")
+knitr::opts_chunk$set(message = FALSE, warning = FALSE, message = FALSE)
+```
+
+## Introduction
+
+This week, we are analyzing and modeling a dataset from MASS package, "Housing Values in Suburbs of Boston". References and further description can be found [here](https://stat.ethz.ch/R-manual/R-devel/library/MASS/html/Boston.html).
+
+## Dataset
+
+```{r}
+rm(list=ls())
+
+library(MASS)
+boston <- MASS::Boston
+
+dim(boston)
+```
+
+The data hase 506 rows and 14 columns.
+
+```{r}
+str(boston)
+```
+
+Most of the columns are double valued, `chas` and  `rad` are integer typed.
+
+```{r}
+table(sapply(boston, typeof))
+```
+
+Summary on the variables is shown below. `crim` is per capita crime rate by town, `tax` is a tax rate. `chas` is a dummy variable describing relative location to Charles River (1 if tract bounds river). Full descriptions are [here](https://stat.ethz.ch/R-manual/R-devel/library/MASS/html/Boston.html).
+
+```{r}
+summary(boston)
+```
+
+Correlation plot shows many strong correlations (without going into p-values):
+
+```{r}
+library(corrplot)
+library(tidyverse)
+
+cor.matrix <- cor(boston)
+
+rownames(cor.matrix) <- colnames(cor.matrix)
+
+corrplot(as.matrix(cor.matrix), method = "ellipse", 
+         order = "AOE", number.cex = 0.5,  # Use some nice ordering
+         tl.cex = 1, tl.col = "black", addCoef.col = 'black')
+```
+
+We can filter and show correlations whose absolute value is above 0.7. Only show significant correlation coefficients. We see that e.g. `dis` and `age` correlate negatively, while `nox` and `age` correlate positively.
+
+```{r}
+cor.matrix.filtered <- cor(boston)
+
+cor.matrix.filtered <- apply(cor.matrix.filtered, 2, function(x) {
+  ifelse(abs(x) > 0.7, x, 0)
+})
+
+rownames(cor.matrix.filtered) <- colnames(cor.matrix.filtered)
+
+# Don't show zeroes. Get the order manually to match that above.
+ord <- corrMatOrder(cor.matrix, order="AOE")
+
+cor.matrix.filtered <- cor.matrix.filtered[ord, ord]
+col <- ifelse(abs(cor.matrix.filtered - 0) < .Machine$double.eps, "white", "black") #[ord, ord]
+
+# Test for correlation significance.
+testRes = cor.mtest(boston, conf.level = 0.95)
+
+corrplot(as.matrix(cor.matrix.filtered),
+         method = "ellipse", order = "original", number.cex = 0.5,
+         tl.cex = 1, tl.col = "black",
+         p.mat = testRes$p, insig = "blank", na.label = " ", 
+         use = "complete.obs", addCoef.col = col)
+```
+
+Plot the variables that correlate highly with some other variable
+
+```{r}
+interesting <- which(
+  abs(cor.matrix.filtered) > 0.7 & abs(cor.matrix.filtered) < 1, 
+  arr.ind = TRUE)
+
+boston.cor <- boston[, which(
+  colnames(boston) %in% rownames(interesting))]
+
+# pairs(boston.cor, col = boston$chas)
+
+library(GGally)
+
+lower <- function(data, mapping, method="loess", ...){
+      p <- ggplot(data = data, mapping = mapping) + 
+      geom_point() + 
+      geom_smooth(method=method, ...)
+      p
+}
+
+p <- ggpairs(boston.cor, mapping = aes(alpha = 0.3), 
+             lower = list(continuous = lower),  
+             upper = list(continuous = wrap("cor", size = 2)))
+
+p
+```
+
+We see that e.g. `nox` and `age` have a clear non-linear pattern (modeling with lm reveals heteroscedasticity of the residuals vs. fitted values). Other variables produce two groups of points with `rad` or `tax`.
+
+Then plot the other ones that do not correlate strongly.
+
+```{r}
+boston.cor <- boston[, which(!  # not
+  colnames(boston) %in% c(rownames(interesting), "chas"))]
+
+# c("nox", "dis", "tax", "indus", "age", "rad", "medv", "lstat")
+
+# pairs(boston.cor, col = boston$chas)
+
+lower <- function(data, mapping, method="loess", ...){
+      p <- ggplot(data = data, mapping = mapping) + 
+      geom_point() + 
+      geom_smooth(method=method, ...)
+      p
+}
+
+p <- ggpairs(boston.cor, mapping = aes(alpha = 0.3), 
+             lower = list(continuous = lower),  
+             upper = list(continuous = wrap("cor", size = 2)))
+
+p
+```
+
+Here we also see some interesting patterns, which are left for future analyses.
+
+Then plot variable distributions, stratify by binary `chas` 
+
+```{r fig.height=5}
+library(reshape2)
+
+boston$chas <- as.factor(boston$chas)
+
+boston.m <- 
+  boston %>%
+    melt(id.vars = c("chas"))
+
+ggplot(boston.m, aes(value, col = chas)) +
+  geom_histogram(aes(fill = chas)) + facet_wrap(~variable, scales = "free")
+  
+```
+
+Most of the distributions are not close to normal, and most observations belong to `chas == 0` class. Distributions of `indus`, `tax` and `rad` have two peaks.
+
+
+## Standardization
+
+```{r}
+boston.std <- as.data.frame(
+  scale(boston[, which(!(colnames(boston) %in% c("chas")))]))
+
+boston.std$chas <- boston$chas
+
+summary(boston.std)
+
+apply(boston.std, 2, var)
+```
+
+All variables except the factorized `chas` are mean centered, and have unit variance. Plot the distributions for clarity
+
+```{r fig.height=5}
+boston.m <- 
+  boston.std %>%
+    melt(id.vars = c("chas"))
+
+ggplot(boston.m, aes(value, col = chas)) +
+  geom_histogram(aes(fill = chas)) + facet_wrap(~variable, scales = "free")
+```
+
+Create categorical variable of crime rate by quantiles
+
+```{r}
+bins <- quantile(boston.std$crim)
+
+crime <- cut(boston.std$crim, breaks = bins, 
+             include.lowest = TRUE, 
+             labels = c("low", "med_low", "med_high", "high"))
+
+boston.std <- dplyr::select(boston.std, -crim)
+
+boston.std$crime <- crime
+
+```
+
+Divide into train and test set (follow course's Datacamp exercise)
+
+```{r}
+# standardize the chas as we need later
+boston.std$chas <- scale(as.numeric(boston.std$chas))
+
+n <- nrow(boston.std)
+
+set.seed(123)  # for reproducibility
+# sample n * 0.8 entries from 1:n
+ind <- sample(n,  size = n * 0.8)
+
+train <- boston.std[ind,]
+test <- boston.std[-ind,]
+
+# save the correct classes from test data
+test.correct.classes <- test$crime
+
+# remove the crime variable from test data
+test <- dplyr::select(test, -crime)
+```
+
+
+## LDA
+
+Fit LDA on all variables as instructed. Note that none of the variable distribution is normal by Shapiro-Wilk normality test
+
+```{r}
+# sapply(boston.std %>% select(-chas) %>% select(-crime), shapiro.test)
+
+# fit LDA
+lda.fit <- lda(crime ~ ., data = train)
+
+# plot biplot (follow course's Datacamp exercise)
+
+lda.arrows <- function(x, myscale = 1, arrow_heads = 0.1, color = "red", 
+                       tex = 0.75, choices = c(1,2)){
+  heads <- coef(x)
+  arrows(x0 = 0, y0 = 0, 
+         x1 = myscale * heads[,choices[1]], 
+         y1 = myscale * heads[,choices[2]], col=color, length = arrow_heads)
+  text(myscale * heads[,choices], labels = row.names(heads), 
+       cex = tex, col=color, pos=3)
+}
+
+# target classes as numeric
+classes <- as.numeric(train$crime)
+
+# plot the lda results
+plot(lda.fit, dimen = 2, col = classes, pch = classes)
+lda.arrows(lda.fit, myscale = 2.25)
+
+```
+
+From the biplot we see high crime rates are separated from the others well. `rad`, `zn`, (`indus` and `nox`) stand out from other variables, with `rad` being approximately orthogonal to the other ones. Medium high crime rates are separated pretty well from the low ones. Medium low rates overlap with low and medium high rates. There are a few outliers in all classes that are far from the center of mass of their respective group.
+
+
+```{r}
+# print lda.fit details
+# The prior probabilities seem to reflect the distribution in train data, 
+# but are not identical
+table(train$crime) / nrow(train)
+
+lda.fit
+```
+
+## Prediction with LDA
+
+```{r}
+# predict the classes
+test.predictions <- predict(lda.fit, test)
+
+# tabulate the results
+table(test.predictions$class, test.correct.classes)
+```
+
+High class is predicted well, as was expected. The other classes are predicted less accurately, `med_high` is often predicted as `med_low`, and `low` as `med_low`. Thus with this model we can only reliably separate `high` from other cases.
+
+## K-means
+
+Reload `boston` and standardize.
+
+```{r}
+boston <- MASS::Boston
+
+boston <- scale(boston)
+
+# Get pairwise distances 
+boston.d <- dist(boston, method = "euclidean")
+```
+
+
+```{r}
+# Test different number of clusters
+ks <- 1:15
+
+# Determine optimal number of cluster by total within cluster 
+# sum of squares
+
+# We run k-means on the scaled data and not on the distances, 
+# since k-means is not applicable to be run on distance matrix alone, see e.g.
+# https://stackoverflow.com/questions/43512808/ and
+# https://stats.stackexchange.com/questions/32925/
+twcss <- sapply(ks, function(x) { kmeans(boston, centers = x)$tot.withinss})
+
+# Plot
+qplot(x = ks, y = twcss, geom = "line") + theme_bw()
+```
+
+Well, it is difficult to see what is the optimal number of clusters. Three or four is probably OK, two likely not large enough although that is where the largest drop in `twcss` occurs. Let's run a (classical) multidimensional scaling in 2D on the distance matrix and see if there are clear clusters.
+
+```{r}
+mds.fit <- cmdscale(boston.d, k = 2)
+
+plot(mds.fit[, 1], mds.fit[, 2], 
+     xlab = "Dimension 1", ylab = "Dimension 2")
+```
+
+Well, it seems like there are two clusters obtained with MDS.
+
+Let's run a k-medoid on the distance matrix and use the silhouette plot this time.
+
+```{r}
+library(cluster)
+library(factoextra)
+# adapted from https://www.r-bloggers.com/2019/01/10-tips-for-choosing-the-optimal-number-of-clusters/
+
+fviz_nbclust(as.matrix(boston.d), pam, method = "silhouette", k.max = 12) +
+  theme_minimal() + ggtitle("Silhoutte plot for k-medoids")
+
+```
+
+With k-medoids, we get two clusters as the optimal.
+
+Finally, plot dendrogram
+
+```{r}
+# Choose average clustering as a "generic" one
+hier.clust <-  hclust(boston.d, method = "average")
+plot(hier.clust, cex = 0.5)
+abline(h = 5.75, col = "red")
+```
+
+Hierarchical clustering suggests three big clusters and one or two smaller ones.
+
+Since in k-means we noted that 3-4 clusters could be good, decrease the number to 3 based on the short analysis with MDS, k-medoids and hclust.
+
+Let's visualize the results
+
+```{r}
+km <- kmeans(boston, centers = 3)
+
+cols <- rep("black", nrow(boston))
+cols[km$cluster == 2] <- "blue"
+cols[km$cluster == 3] <- "red"
+
+# make more compact, hide axes
+pairs(boston, col = cols,
+      gap = 0, xaxt = "n", yaxt = "n", pch = 3)
+```
+
+Pairs plot does not appear to support the hypothesis of three clusters explainable by any pair of variables, although there are clearly many plots with two groups e.g. with `rad` variable. 
+
+```{r}
+# Visualize k-means result in 2D with principal components 
+# (from PCA, shows also the percentage of variance explained).
+
+factoextra::fviz_cluster(km, data = boston,
+             #palette = c("#2E9FDF", "#00AFBB", "#E7B800"), 
+             geom = "point",
+             ellipse.type = "convex", 
+             ggtheme = theme_bw())
+```
+
+```{r}
+km2 <- kmeans(boston, centers = 2)
+
+factoextra::fviz_cluster(km2, data = boston,
+             #palette = c("#2E9FDF", "#00AFBB", "#E7B800"), 
+             geom = "point",
+             ellipse.type = "convex", 
+             ggtheme = theme_bw())
+```
+
+Two clusters overlap less than three, but clustering into three groups is not too bad.
+
+## LDA on K-means clusters
+
+Run LDA on k-means clusters (without train-test split).
+
+```{r}
+boston <- as.data.frame(scale(MASS::Boston))
+
+km <- kmeans(boston, centers = 3)
+
+boston$class <- km$cluster
+```
+
+```{r}
+# fit LDA
+lda.fit.km <- lda(class ~ ., data = boston)
+
+# plot the lda results
+plot(lda.fit.km, dimen = 2, col = boston$class, pch = boston$class) 
+lda.arrows(lda.fit.km, myscale = 2.5)
+```
+
+Separation of the groups is similar to what we had before: one clearly different, and two overlapping. `rad` is again important variable to separate a group from the others. This time also `tax` is similar in direction and magnitude as `rad`, which we expected from correlation analysis. `age` and `dis` separate clusters 2 and 3 stronger than the other variables. They are more or less orthogonal to `rad` and `tax`.
+
+```{r}
+# tabulate how k-means clusters are reproduced
+table(predict(lda.fit.km)$class, km$cluster)
+
+# Seems to be reproduced pretty well.
+```
+
+## 3D plots
+
+Reuse train set from above, follow instructions of the course
+
+```{r}
+model_predictors <- dplyr::select(train, -crime)
+
+# check the dimensions
+dim(model_predictors)
+dim(lda.fit$scaling)
+# matrix multiplication
+matrix_product <- as.matrix(model_predictors) %*% lda.fit$scaling
+matrix_product <- as.data.frame(matrix_product)
+
+```
+
+```{r}
+library(plotly)
+
+plot_ly(x = matrix_product$LD1, 
+        y = matrix_product$LD2, 
+        z = matrix_product$LD3, 
+        type = "scatter3d", mode = "markers", 
+        color = train$crime)
+
+```
+
+Plot the same with three k-means clusters
+
+```{r}
+km <- kmeans(train %>% select(-crime), centers = 3)
+
+plot_ly(x = matrix_product$LD1, 
+        y = matrix_product$LD2, 
+        z = matrix_product$LD3, 
+        type = "scatter3d", mode = "markers", 
+        color = as.factor(km$cluster))
+```
+
+
+Now it is more apparent how there might be three clusters. In both plots there is one `high` crime rate cluster, and the rest of data points form two clouds: a low-to-med_low cluster and a med_high_to_med_low cluster.
+
+All in all, for prediction tasks, reliable models can be built for detecting `high` and `non-high` binary classes. Splitting `non-high` into two groups will decrease prediction accuracy.
