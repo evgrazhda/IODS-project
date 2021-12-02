@@ -1,0 +1,293 @@
+# Week 5 - Dimensionality reduction techniques
+
+```{r}
+date()
+```
+
+
+```{r setup_5, include = FALSE, cache = FALSE}
+library(knitr)
+opts_chunk$set(fig.show = "hold")
+knitr::opts_chunk$set(message = FALSE, warning = FALSE, message = FALSE)
+```
+
+## Introduction
+
+This week, we are analyzing and modeling a dataset that describes various aspect of human development and gender inequalities stratified by countries. Data description is found [here](http://hdr.undp.org/en/content/human-development-index-hdi) and [here](http://hdr.undp.org/sites/default/files/hdr2015_technical_notes.pdf).
+
+## Dataset
+
+Begin by loading the analysis data. Let's use the "official" csv-file; an R script to produce the wrangled data is in the [repo](https://github.com/evgrazhda/IODS-project).
+
+```{r}
+rm(list=ls())
+
+# read in the data, convert strings to factors
+human <- read.csv("http://s3.amazonaws.com/assets.datacamp.com/production/course_2218/datasets/human2.txt",
+                  header = TRUE, sep = ",", stringsAsFactors = TRUE)
+
+dim(human)
+```
+
+```{r}
+summary(human)
+```
+
+`Life.Exp` spans the range [49, 83.50], `GNI` [581, 123124], maternal mortality ratio (per 100000) [1.0, 1100] and adolescent birth rate (per 100000) [0.60, 204.80].
+
+Plot the scatterplot and correlations between the variables.
+
+```{r}
+library(GGally)
+library(ggplot2)
+
+lower <- function(data, mapping, method="loess", ...){
+      p <- ggplot(data = data, mapping = mapping) + 
+      geom_point() + 
+      geom_smooth(method=method, ...)
+      p
+}
+
+p <- ggpairs(human, mapping = aes(alpha = 0.3), 
+             lower = list(continuous = lower),  
+             upper = list(continuous = wrap("cor", size = 2))) + 
+      theme(text = element_text(size = 8))
+
+# Add color to correlations
+# stackoverflow.com/questions/45873483/
+
+# correlations matrix plot
+p.corr <- ggcorr(human, label = TRUE, label_round = 3,
+                 palette = "RdBu")
+
+# get colors
+g2 <- ggplotGrob(p.corr)
+colors <- g2$grobs[[6]]$children[[3]]$gp$fill
+
+# Change background color to tiles in the upper triangular matrix of plots 
+idx <- 1
+for (k1 in 1:(ncol(human) - 1)) {
+  for (k2 in (k1 + 1):ncol(human)) {
+    plt <- getPlot(p, k1, k2) +
+     theme(panel.background = element_rect(fill = colors[idx], color="white"),
+           panel.grid.major = element_line(color = colors[idx]))
+    p <- putPlot(p, plt, k1, k2)
+    idx <- idx + 1
+  }
+}
+
+p
+```
+
+There are many significant strong correlations. Eg. `Life.Exp` correlates positively with `Edu.Exp`, and `Mat.Mor` correlates positively with `Ado.Birth`. `Life.Exp`, `Edu.Exp` correlate negatively with `Mat.Mor`. `Life.Exp` and `Ado.Birth` correlate negatively as well.
+
+Let's examine the correlations with corrplot also to see better the groups of positive and negative correlations. Only `Labo.FM` and `Parli.F` do not correlate strongly with anything.
+
+```{r}
+library(corrplot)
+
+cor.matrix <- cor(human)
+
+rownames(cor.matrix) <- colnames(cor.matrix)
+
+corrplot(as.matrix(cor.matrix), method = "ellipse", 
+         order = "AOE", number.cex = 0.5,  # Use some nice ordering
+         tl.cex = 1, tl.col = "black", addCoef.col = 'black')
+```
+
+Then plot histograms to assess the distributions.
+
+```{r}
+library(tidyverse)
+
+gather(human) %>% ggplot(aes(value)) + 
+  facet_wrap("key", scales = "free") + 
+  geom_histogram() + theme(axis.text.x = element_text(angle = 45, hjust = 1, size = 8))
+```
+
+`Edu.Exp` is close to normal distribution (passes Shapiro-Wilk normality test). `GNI`, `Mat.Mor` and `Ado.Birth` are right skewed, `Life.Exp` is left skewed.
+
+## PCA
+
+Perform PCA on non-standardized data first (follow code from course's DataCamp)
+
+```{r fig.cap = "Figure 1. PCA on non-standardized data. GNI's absolute variance is very large and it ends up explaining nearly all the absolute variance."}
+human.pca <- prcomp(human)  # SVD
+
+s <- summary(human.pca)
+
+# rounded percentages of variance captured by each PC
+pca.pr <- round(100 * s$importance[2,], digits = 1) 
+
+# create object pc_lab to be used as axis labels
+pc.lab <- paste0(names(pca.pr), " (", pca.pr, "%)")
+
+# draw a biplot
+biplot(human.pca, cex = c(0.6, 0.8), col = c("grey40", "darkred"), 
+       xlab = pc.lab[1], ylab = pc.lab[2])
+```
+
+Well, since the data is not standardized, GNI appears to capture virtually all variability in the data as it has the highest absolute variance by far. Qatar stands out along the first PC and is opposite of e.g. Chad in GNI.
+
+```{r}
+sort(sapply(human, var))
+```
+
+Let's standardize and replot.
+
+```{r fig.cap = "Figure 2. PCA on standardized data. Life expectancy, expected years of schooling and ratio of female to male populations with secondary education correlate with the first principal component and are of approximately same magnitude. They have an opposite effect to adolescent birth rate and maternal mortality. Ratio of labour force participation of females to males and percent of parliament representation for females are orthogonal to other variables and correlate with the second principal component."}
+human.pca <- prcomp(human, scale = TRUE)
+
+s <- summary(human.pca)
+
+# rounded percentages of variance captured by each PC
+pca.pr <- round(100 * s$importance[2,], digits = 1) 
+
+# create object pc_lab to be used as axis labels
+pc.lab <- paste0(names(pca.pr), " (", pca.pr, "%)")
+
+# draw a biplot
+biplot(human.pca, cex = c(0.6, 0.8), col = c("grey40", "darkred"), 
+       xlab = pc.lab[1], ylab = pc.lab[2])
+
+```
+
+Now the two first principal components explain 69.8% of variation in the data, mainly due to PC1 (53.6%). `Life.Exp`, `Edu.Exp` and `Edu2.FM` all point along PC1 in the same direction, `Mot.Mor` and `Ado.Birth` point in the opposite direction, which is coherent with the correlation analysis. `Parli.F` and `Labo.FM` correlate with each other and PC2; as we calculated before, correlation is not very strong.
+
+Third principal component explains around 9.6% of the variance and the following components less. 8 principal components are needed to fully explain the variance of the data.
+
+```{r}
+summary(human.pca)
+```
+
+
+## PCA interpretation
+
+Based on the deductions above, we can conclude that PC1 mostly captures the variance in `Life.Exp`, `Edu.Exp` and `Edu2.FM`, as well as `Mot.Mor` and `Ado.Birth`. It explains 53.6% of the total variance in the standardized `human` data. `Mot.Mor` and `Ado.Birth` point very intuitively in the opposite direction to education, education ratio of females to males, and to life expectancy. 
+
+PC2 captures variance in `Parli.F` and `Labo.FM`, explaining 16.2% of the total variance in the data. These variables exhibit their effects in the same direction along PC2. Thus female parliament and labor representation are suggested to have similar effects.
+
+All in all, the first two PCs are enough to approximately represent the data as the total variance explained is relatively good, 69.8%.
+
+## Tea dataset
+
+Load the tea dataset
+
+```{r}
+library(FactoMineR)
+
+data(tea)
+
+str(tea)
+dim(tea)
+table(sapply(tea, typeof))
+```
+
+The FactoMineR tea data has 300 rows and 36 columns, all of them except for `age` are factors encoded into integers. It is questionnaire data, from [documentation](https://cran.r-project.org/web/packages/FactoMineR/FactoMineR.pdf):
+
+"We asked to 300 individuals how they drink
+tea (18 questions), what are their product’s perception (12 questions) and some personal details (4
+questions)."
+
+### Visualize the data
+
+
+```{r fig.width=8, fig.height=16}
+# tea %>% select(-age) %>%
+tea.cat <- tea %>% select(-age)
+  
+p <- 
+  tea %>% 
+    select(-age) %>%
+    gather %>% 
+    group_by(value) %>% 
+    mutate(count = n()) %>%
+    ggplot(aes(value)) + geom_point(y = .5, aes(size = count)) + 
+      facet_wrap("key", scales = "free", strip.position = "top", ncol = 3) + 
+      # facet_grid("key", scales = "free", space = "free") +
+      theme(axis.text.x = element_text(angle = 45, vjust = 0.5, hjust=1), 
+            panel.spacing = unit(2, "lines")) + 
+      coord_flip() + 
+      theme_bw()
+
+# https://stackoverflow.com/questions/52341385/
+p
+```
+
+Plot age separately
+
+```{r}
+ggplot(tea, aes(age)) + geom_histogram() + theme_bw()
+```
+
+### MCA
+
+Perform multiple correspondence analysis (with indicator matrix) on the FactoMineR tea data.
+
+```{r}
+mca <- MCA(tea %>% select(-age), graph = FALSE)
+summary(mca)
+```
+
+Eigenvalue output contains the variances and the respective percentage of variance explained by each dimension.
+
+Individuals output shows the coordinates, contribution of the individual as percent, and the squared cosine which measures the degree of association between variable categories and a dimension [`[`1`]`)](http://www.sthda.com/english/articles/31-principal-component-methods-in-r-practical-guide/114-mca-multiple-correspondence-analysis-in-r-essentials/).
+
+Categories are detailed similarly to individuals. The v.test measures if the category is significantly different from zero along a dimension (is abs(v.test) > 2, sign gives direction along the dimension). Categorical variables section shows squared correlation ratio to the dimensions.
+
+Before going into interpretation, let's - for pedagogical reasons - follow the [example](https://www.youtube.com/watch?v=reG8Y9ZgcaQ) of a FactoMineR developer and redo the MCA with age as a quantitative supplementary variable and a set of others as qualitative supplementary variables.
+
+```{r}
+mca <- MCA(tea, quanti.sup = 19, quali.sup = 20:36, graph = FALSE)  # 19 = "age"
+summary(mca)
+```
+
+The output of summary contains now also supplementary categories, for which there are no contributions as they are not used to build the explanatory dimensions.
+
+Plot first the quantitative supplementary `age` variable. It seems `age` does not correlate strongly with the first two dimensions.
+
+```{r}
+plot.MCA(mca, choix = "quanti.sup")
+```
+
+Then plot variable graph for the correlation ratios. `where`, `tearoom` and `how` correlate with the first dimension more than other variables. Similarly `where`, `price` and `how` correlate with the second dimension more than the other variables. Active variables are in red, suppl. categorical variables in green, and suppl. continuous variable `age` in blue.
+
+```{r}
+plot.MCA(mca, choix = "var", xlim = c(0, 0.75), ylim = c(0, 0.75))
+```
+
+Then plot the graph for individuals and the category values. The plot is quite busy; it appears that the values `tea shop` (where), `unpackaged` (how) and `p_upscale` (price) are important for dimension 2. `other`(How [sic]) and `tearoom` (tearoom), `chain store+tea shop` (where) are important for dimension 1. Other data points are more clustered towards the middle.
+
+```{r fig.height=6}
+plot.MCA(mca, choix = "ind")
+```
+
+Plot next only individuals and for the other plot the active categories. Plot only 50 individuals and 15 category values that contribute the most to the dimensions. Color the individuals by `where` variable.
+
+For individuals, there appears to be a denser region in the third quadrant. Individuals contributing the most are on the periphery of the point cloud. It seems the individuals are separated nicely by where they get their tea from (`where`). This is not too suprising, as that variable was found to be important in the earlier plots.
+
+Conclusions for the active categories are as before.
+
+```{r}
+op <- par(mfcol=c(1, 2),
+          mar = c(4, 4, 2, 1),
+          mgp = c(2, 1, 0))
+
+plot(mca, invisible = c("var", "quali.sup", "quanti.sup"), 
+     title = "Individuals", select = "contrib 15", habillage = "where")
+plot(mca, invisible = c("ind", "quali.sup", "quanti.sup"), 
+     title = "Active categories", autoLab = "yes", cex = 0.5,
+     selectMod = "contrib 15")
+
+par(op) # return original par
+
+```
+
+
+
+
+
+
+
+
+
