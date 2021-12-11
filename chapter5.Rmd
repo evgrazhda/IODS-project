@@ -231,7 +231,7 @@ summary(mca)
 
 Eigenvalue output contains the variances and the respective percentage of variance explained by each dimension.
 
-Individuals output shows the coordinates, contribution of the individual as percent, and the squared cosine which measures the degree of association between variable categories and a dimension [`[`1`]`)](http://www.sthda.com/english/articles/31-principal-component-methods-in-r-practical-guide/114-mca-multiple-correspondence-analysis-in-r-essentials/).
+Individuals output shows the coordinates, contribution of the individual as percent, and the squared cosine which measures the degree of association between variable categories and a dimension [`[`1`]`](http://www.sthda.com/english/articles/31-principal-component-methods-in-r-practical-guide/114-mca-multiple-correspondence-analysis-in-r-essentials/).
 
 Categories are detailed similarly to individuals. The v.test measures if the category is significantly different from zero along a dimension (is abs(v.test) > 2, sign gives direction along the dimension). Categorical variables section shows squared correlation ratio to the dimensions.
 

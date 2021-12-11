@@ -1,0 +1,543 @@
+# Week 6 - Analysis of longitudinal data
+
+```{r}
+date()
+```
+
+
+```{r setup_6, include = FALSE, cache = FALSE}
+library(knitr)
+opts_chunk$set(fig.show = "hold")
+knitr::opts_chunk$set(message = FALSE, warning = FALSE, message = FALSE)
+```
+
+## Introduction
+
+This week, we are analyzing and modeling two longitudinal datasets with measurements on brief psychiatric rating scale (BPRS) ([1] as referred in [2]) and rats weight by diet (RATS) ([3] as referred in [2]). The idea is to implement the analyses of Chapter 8 [2] for _RATS_ data and of Chapter 9 [2] for _BPRS_ data.
+
+[1] Davis, C. S. (2002). Statistical Methods for the Analysis of Repeated Measurements. Springer, New York.
+
+[2] Vehkalahti K. and Everitt B. S. (2019). Multivariate Analysis for the Behavioral Sciences, Second Edition.
+
+[3] Crowder, M. J. and Hand, D. J. (1990). Analysis of Repeated Measurements.
+Chapman and Hall, London.
+
+## RATS
+
+Begin by loading the analysis data in long form.
+
+```{r}
+rm(list=ls())
+
+# read in the data, convert strings to factors
+RATSL <- read.csv("./data/ratsl.csv", header = TRUE, sep = ",", row.names = 1)
+
+dim(RATSL)
+str(RATSL)
+```
+
+```{r}
+# convert to factor
+RATSL$ID <- as.factor(RATSL$ID)
+RATSL$Group <- as.factor(RATSL$Group)
+```
+
+
+```{r}
+summary(RATSL)
+```
+
+Weights vary from 225 to 628 g, and there the `Time` spans 64 days.
+
+### Growth profiles
+
+First plot individual response profiles by `Group`, color lines by ID to avoid recurring linestyles.
+
+
+```{r}
+library(ggplot2)
+
+p <- ggplot(RATSL, aes(x = Time, y = Weight)) + 
+  geom_line(aes(color = ID)) + facet_wrap(~Group, labeller = label_both) + 
+  ylab("Weigth (g)") + xlab("Day") + theme_bw()
+
+p
+```
+
+It seems that the first group had lower rat weights. In the second group there is an outlier weighing over 550 g on the first measurement day, and the third group weighs around 500 g in the beginning of the study. With this graph we can track the weight response of the rats by groups. To focus on the variability, let's standardize the data and replot.
+
+```{r}
+library(tidyverse)
+
+# Standardize weight
+RATSL <- RATSL %>%
+  group_by(Time) %>%
+  mutate(stdweight = (Weight - mean(Weight))/sd(Weight) ) %>%
+  ungroup()
+
+p <- ggplot(RATSL, aes(x = Time, y = stdweight)) + 
+  geom_line(aes(color = ID)) + facet_wrap(~Group, labeller = label_both) + 
+  ylab("Standardized weigth") + xlab("Day") + theme_bw()
+
+p
+```
+
+Now for each measurement day, the weights are standardized around zero to unit variance. It is easier to see the weight differences by ID.
+
+Next, plot mean response profile for the three groups, add standard error.
+
+```{r}
+# Count of measurement days
+n <- RATSL$Time %>% unique() %>% length()
+
+# Mean and standard error of weight by Group and Time 
+RATSS <- RATSL %>%
+  group_by(Group, Time) %>%
+  summarise(mean = mean(Weight), se = sd(Weight) / sqrt(n)) %>%
+  ungroup()
+
+# Plot the mean profiles
+ggplot(RATSS, aes(x = Time, y = mean, linetype = Group, shape = Group)) +
+  geom_line() + geom_point() +
+  scale_shape_manual(values = c(1, 2, 4)) + # nicer shapes
+  geom_errorbar(aes(ymin = mean - se, ymax = mean + se, linetype="1"), width=0.3) +
+  ylab("mean(Weigth) +/- se(Weight)") + xlab("Day") +
+  theme_bw() +
+  theme(legend.position = c(0.9, 0.4))
+
+```
+
+Group 1 is clearly lighter than others. Groups 2 and 3 are quite close in weight (without overlapping). There is more variation in group 2 due to the outlier.
+
+Alternatively, plot boxplot to display variance between groups by time.
+
+```{r}
+p <- ggplot(RATSL, aes(x = factor(Time), y = Weight, fill = Group)) + 
+  geom_boxplot() +
+  ylab("Weight (g)") + xlab("Day") +
+  theme_bw() +
+  theme(legend.position = c(0.9, 0.4))
+
+p
+```
+
+For this data, the previous plot was clearer as the boxes here are far apart on the y axes and difficult to follow.
+
+### Summary measures
+
+RATS is a growth data. Choose mean as the summary measure and plot (linear regression performed later).
+
+```{r}
+# Filter the first day, group by Group and ID, summarize by group
+RATSLD <- RATSL %>%
+  filter(Time > 1) %>%
+  group_by(Group, ID) %>%
+  summarise(mean = mean(Weight)) %>%
+  ungroup()
+
+# Boxplot
+p <- ggplot(RATSLD, aes(x = Group, y = mean)) +
+  geom_boxplot() +
+  stat_summary(fun = "mean", geom = "point", shape = 23, size = 4, fill = "white") +
+  ylab("mean(Weight), days 8-64") +
+  theme_bw()
+
+p
+```
+
+Boxplot shows an outlier for each group. Groups 2 and 3 are somewhat skewed. We will not systematically remove outliers based on this plot, because that would amount to almost 20% of data (3 / 16). Outlier from group 2 could however be probably removed, although that too would amount to removing 25% of the group data. Should we want to remove the outlier, the code would be
+
+```{r}
+outID <- RATSL %>% filter(Time == 64 & Weight > 600) %>% select(ID)
+
+RATSLout <- RATSL %>%
+  filter(ID != outID$ID)
+
+# Verify with a plot
+ggplot(RATSLout, aes(x = Time, y = stdweight)) + 
+  geom_line(aes(color = ID)) + facet_wrap(~Group, labeller = label_both) + 
+  ylab("Standardized weigth") + xlab("Day") + theme_bw()
+```
+
+Work with the full data (no outiliers removed), perform Anova and t-tests to assess if there is difference between group means. (Follow the guide [here]( https://www.datanovia.com/en/blog/how-to-perform-t-test-for-multiple-groups-in-r/).)
+
+```{r}
+library(rstatix)
+
+aov.rats <- RATSL %>% anova_test(Weight ~ Group)
+aov.rats 
+```
+
+Clearly, there are differences between groups.
+
+```{r}
+# Perform pairwise t-tests, adjust with Bonferroni
+# Assume equal variance, but see
+# https://stats.stackexchange.com/questions/305/
+
+pairwise.ts <- RATSL %>%
+  pairwise_t_test(Weight ~ Group, p.adjust.method = "bonferroni", detailed = FALSE, 
+                  pool.sd = FALSE, var.equal = TRUE)  # pool.sd == FALSE -> normal t-tests
+
+pairwise.ts
+```
+
+All group differences appear significant. Add box plot on full (not mean) data with the signficance annotation.
+
+```{r}
+library(ggpubr)
+
+# Add positions for significance indincators
+pairwise.ts <- pairwise.ts %>% add_xy_position(x = "Group")
+
+ggboxplot(RATSL, x = "Group", y = "Weight") +
+  stat_pvalue_manual(pairwise.ts, hide.ns = TRUE, label = "p.adj.signif") +
+  labs(
+    subtitle = get_test_label(aov.rats, detailed = TRUE),
+    caption = get_pwc_label(pairwise.ts)
+    )
+```
+
+Eta squared is high, 92% of variance in weight is explained by group.
+
+Also perform the pairwise t-test on group means
+
+```{r}
+RATSLD %>%
+  pairwise_t_test(mean ~ Group, p.adjust.method = "bonferroni", pool.sd = FALSE, var.equal = TRUE)
+```
+
+The difference in mean is not significant between groups 2 and 3.
+
+Finally, incorporate the first day as baseline to use in the covariate analysis.
+
+```{r}
+RATSW <- RATSL %>% 
+  select(-stdweight) %>% 
+  pivot_wider(names_from = Time, values_from = Weight, names_prefix = "week") 
+
+RATSLD <- RATSLD %>%
+  mutate(baseline = RATSW$`week1`)
+
+# Fit the linear model with the mean as the response 
+RATSW_lm <- lm(mean ~ baseline + Group, data = RATSLD)
+
+# Compute the analysis of variance table for the fitted model
+anova(RATSW_lm)
+
+```
+
+Baseline measurement is strongly significant having an effect on the weight mean. There doesn't seem to be significant difference by groups. From the diagnostic plots below, we see however that there might be a heteroscedasticity as well as outlier problems (by Cook's distance).
+
+```{r}
+# make the plot tighter
+op <- par(mfrow=c(2, 2),
+          mar = c(4, 4, 2, 1),
+          mgp = c(2, 1, 0))
+
+plot(RATSW_lm)
+
+par(op)
+```
+
+
+Check also the simple linear regression to compare the groups without the baseline
+
+```{r}
+RATS_lm <- lm(Weight ~ Group, data = RATSL)
+summary(RATS_lm)
+```
+
+There are differences between the groups relative to group 1, but the linear model is again not terribly good:
+
+```{r}
+# make the plot tighter
+op <- par(mfrow=c(2, 2),
+          mar = c(4, 4, 2, 1),
+          mgp = c(2, 1, 0))
+
+plot(RATS_lm)
+
+par(op)
+```
+
+
+## BPRS
+
+Begin by loading the analysis data in long form.
+
+```{r}
+# read in the data, convert strings to factors
+BPRSL <- read.csv("./data/bprsl.csv", header = TRUE, sep = ",", row.names = 1)
+
+dim(BPRSL)
+str(BPRSL)
+```
+
+```{r}
+# convert to factor
+BPRSL$subject <- as.factor(BPRSL$subject)
+BPRSL$treatment <- as.factor(BPRSL$treatment)
+```
+
+
+```{r}
+summary(BPRSL)
+unique(BPRSL$subject)
+```
+
+`bprs` values span from 18 to 95, there are 9 measurement weeks, 2 treatments and 20 subjects.
+
+### BPRS profiles
+
+Plot the profiles with text labels by treatment.
+
+```{r}
+p <- ggplot(BPRSL, aes(x = week, y = bprs, group = subject)) +
+  geom_text(aes(label = treatment, color = treatment)) +
+  xlab("week") + 
+  ylab("BRPS") + 
+  theme_bw() +
+  theme(legend.position = "none")
+
+p
+```
+
+The plot is messy as the treatments overlap, even with colors. Plot with lines instead, and panel by treatment to increase clarity.
+
+```{r}
+p <- ggplot(BPRSL, aes(x = week, y = bprs, color = subject)) +
+  geom_line() +
+  theme_bw() +
+  theme(legend.position = "top") +
+  facet_wrap(~treatment, labeller = label_both)
+
+p
+```
+
+The plot is not terribly good either, it is hard to track the subjects and even harder to see the difference by treatment on a subject level. In treatment 2, there is an outlier, but we keep the subject is not an outlier in the other treatment group.
+
+Let's plot a mean aggregate profile, and then fit some models to learn more about the data.
+
+```{r}
+# Count of measurement days
+n <- BPRSL$week %>% unique() %>% length()
+
+# Mean and standard error of weight by Group and time 
+BPRSS <- BPRSL %>%
+  group_by(treatment, week) %>%
+  summarise(mean = mean(bprs), se = sd(bprs) / sqrt(n)) %>%
+  ungroup()
+
+# Plot the mean profiles
+ggplot(BPRSS, aes(x = week, y = mean, linetype = treatment, shape = treatment)) +
+  geom_line() + geom_point() +
+  scale_shape_manual(values = c(1, 2, 4)) + # nicer shapes
+  geom_errorbar(aes(ymin = mean - se, ymax = mean + se, linetype="1"), width=0.3) +
+  ylab("mean(bprs) +/- se(bprs)") + xlab("week") +
+  theme_bw() +
+  theme(legend.position = c(0.9, 0.8))
+```
+
+As suspected, there does not seem to be a big difference by treatment on any particular week.
+
+Finally, plot a box plot for treatment and subject grouping and ignore the baseline
+
+```{r}
+# from Datacamp exercise
+BPRSL8S <- BPRSL %>%
+  filter(week > 0) %>%
+  group_by(treatment, subject) %>%
+  summarise(mean = mean(bprs)) %>%
+  ungroup()
+
+ggplot(BPRSL8S, aes(x = treatment, y = mean)) +
+  geom_boxplot() +
+  stat_summary(fun = "mean", geom = "point", shape = 23, size = 4, fill = "white") +
+  ylab("mean(bprs)") +
+  theme_bw()
+```
+
+There is an outlier in the treatment group 2 as seen before in the line plot.
+
+### Simple linear regression
+
+Fit a linear regression model
+
+```{r}
+BPRS_reg <- lm(bprs ~ week + treatment, data = BPRSL)
+
+summary(BPRS_reg)
+```
+
+Plot a quick overview of the residuals to see if a linear regression is appropriate.
+
+```{r}
+# make the plot tighter
+op <- par(mfrow=c(2, 2),
+          mar = c(4, 4, 2, 1),
+          mgp = c(2, 1, 0))
+
+plot(BPRS_reg)
+
+par(op) # return original par
+```
+
+Linear fit seems OK.
+
+Week is significant, as well as the non-zero intercept. However, treatment conditional on week seems to not be significant. Maybe our model is not good enough to capture the treatment difference. 
+
+Plot scatterplot matrix of repeated measures to assess if there is a pattern between weeks.
+
+```{r}
+# to wide
+BPRSW <- BPRSL %>% 
+  pivot_wider(names_from = week, values_from = bprs, names_prefix = "week") %>%
+  select(-c(treatment, subject)) 
+
+pairs(BPRSW[, 3:ncol(BPRSW)],
+      gap = 0, xaxt = "n", yaxt = "n", pch = 3)
+```
+
+There appears to be autocorrelation, which reduces as the weeks get further apart. It makes sense to capture the autocorrelation with better models that take into account the repeated measures nature of the data. To that end, fit linear mixed models.
+
+Before the models, plot correlations to get numerical values
+
+```{r}
+library(corrplot)
+
+cor.matrix <- cor(BPRSW)
+
+rownames(cor.matrix) <- colnames(cor.matrix)
+
+corrplot(as.matrix(cor.matrix), method = "ellipse", 
+         order = "original", number.cex = 0.5,  # Use some nice ordering
+         tl.cex = 1, tl.col = "black", addCoef.col = 'black')
+```
+
+### Linear mixed models
+
+#### Random intercept
+
+First create a random intercept model.
+
+```{r}
+library(lme4)
+
+# optimize log-likelihood
+BPRS_ref <- lmer(bprs ~ week + treatment + (1 | subject), data = BPRSL, REML = FALSE)
+summary(BPRS_ref)
+```
+
+The random effect variances for the `subject` and residuals appear reasonable: Subject random effects variance is not too large. Residual variance is smaller than in the simple baseline model. 
+
+Regression parameters for week and treatment appear identical to the baseline. The standard errors for both `week` and `treatment2` are a bit smaller, likely reflecting incorporation of the within-subject dependence (unlike in the textbook example, here the treatment variable does not have a larger variance compared to the baseline model; this is perhaps due to larger group sizes than in the RATS data).
+
+There is some negative correlation of the regression coefficients with the intercept (see [here](https://stats.stackexchange.com/questions/57240/)).
+
+
+Compare to the baseline model using AIC:
+
+```{r}
+# https://stackoverflow.com/questions/24019807/
+
+AIC(BPRS_reg, BPRS_ref)
+```
+
+The mixed effects model is better. It would be informative to get the p-values as well:
+
+```{r}
+# With the caveats in
+# https://stats.stackexchange.com/questions/22988/
+
+library(lmerTest)
+fit <- lmerTest::lmer(bprs ~ week + treatment + (1 | subject), data = BPRSL, REML = FALSE)
+summary(fit)
+
+# or with anova
+anova(fit)
+```
+ 
+Well, there is more output but the conclusion is the same.  `week` has a significant effect on `bprs` while treatment group does not. Let's use `lmerTest::lmer` from now on to print the p-values as well.
+
+Next add variable slope.
+
+#### Random intercept and slope model
+
+```{r}
+BPRS_ref1 <- lmerTest::lmer(bprs ~ week + treatment + (week | subject), data = BPRSL, REML = FALSE)
+summary(BPRS_ref1)
+```
+
+We reach the same conclusions as with the random intercept model. Residual variance is lower, but the subject variance increased. Now we also have data on the variance for `week` random effect and there is negative correlation for the variance of intercept and slope (see [here](https://stats.stackexchange.com/questions/24452/)).
+
+```{r}
+AIC(BPRS_ref, BPRS_ref1)
+
+anova(BPRS_ref, BPRS_ref1)
+
+# or
+# library(lmtest)
+# lrtest(BPRS_ref, BPRS_ref1)
+```
+
+The likelihood ratio test and AIC suggest that the random intercept and slope model is better.
+
+#### Random intercept and slope model with interaction term
+
+Lastly, add an interaction term between week and treatment.
+
+```{r}
+BPRS_ref2 <- lmerTest::lmer(bprs ~ week * treatment + (week | subject), data = BPRSL, REML = FALSE)
+summary(BPRS_ref2)
+# confint(BPRS_ref2, 'week:treatment2', level=0.95)
+```
+
+Interestingly, `week` and `treatment` group has a weakly significant interaction, suggesting that the bprs slope is higher in the treatment group 2 on average by 0.72. On closer inspection, the 95% CI [-0.07, 1.50] contains zero and the effect is lost.
+
+```{r}
+AIC(BPRS_ref1, BPRS_ref2)
+
+anova(BPRS_ref1, BPRS_ref2)
+```
+
+The more complicated interaction model does not fit the data significantly better by likelihood ratio test (unless divided by 2 as in the textbook, page 179), nor is the AIC too different.
+
+Plot the fitted values. We see that indeed both the slope and the intercepts vary.
+
+```{r}
+library(ggpubr)
+
+# Create a new column fitted to RATSL
+BPRSLF <- BPRSL %>%
+  mutate(fitted = fitted(BPRS_ref2))
+
+# BRPSL data
+g1 <- ggplot(BPRSLF, aes(x = week, y = bprs, color = subject)) +
+  geom_line(aes(linetype = treatment)) +
+  theme(legend.position = "top")
+
+# Fitted values with a mixed effects model
+g2 <- ggplot(BPRSLF, aes(x = week, y = fitted, color = subject)) +
+  geom_line(aes(linetype = treatment)) +
+  theme(legend.position = "top")
+
+ggarrange(g1, g2,
+          ncol = 2, nrow = 1, common.legend = TRUE, 
+          legend = "top")
+```
+
+There is a funnel shape in the residuals versus fitted values, the residuals appear normally distributed. This is likely because the `bprs` is not normally distributed, and indeed log-transform seems to help. We leave it at that, but note that more work is required to diagnose the models.
+
+```{r}
+plot(BPRS_ref2)
+qqnorm(resid(BPRS_ref2))
+
+# transform
+BPRSLOG <- BPRSL
+BPRSLOG$bprs <- log10(BPRSLOG$bprs)
+BPRS_ref3 <- lmerTest::lmer(bprs ~ week * treatment + (week | subject), data = BPRSLOG, REML = FALSE)
+plot(BPRS_ref3)
+qqnorm(resid(BPRS_ref3))
+```
+
